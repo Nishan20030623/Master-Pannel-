@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="si">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Nishan Service</title>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, set, push, onValue, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyCxk8X9g6vDEOC3ZAQlGSYxC-SESW2vamY",
+            authDomain: "nishanx-a8c4e.firebaseapp.com",
+            projectId: "nishanx-a8c4e",
+            storageBucket: "nishanx-a8c4e.firebasestorage.app",
+            messagingSenderId: "659660529862",
+            appId: "1:659660529862:web:0fcb0e3be637e1ab6037c7",
+            measurementId: "G-P0QL7Z2R3B"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // --- Add New Agent ---
+        window.addAgent = function() {
+            const id = document.getElementById('agentId').value.trim();
+            const name = document.getElementById('agentName').value.trim();
+            const phone = document.getElementById('agentPhone').value.trim();
+            if(!id || !name) return alert("කරුණාකර නම සහ ID ඇතුළත් කරන්න!");
+
+            set(ref(db, 'agents/' + id), {
+                id, name, phone, commissionBalance: 0
+            }).then(() => {
+                alert("Sub Agent සාර්ථකව Active කළා!");
+                document.getElementById('agentId').value = '';
+                document.getElementById('agentName').value = '';
+            });
+        };
+
+        // --- Add Transaction & Update Commission ---
+        window.addTransaction = function() {
+            const agentId = document.getElementById('selectAgent').value;
+            const type = document.getElementById('transType').value;
+            const amount = parseFloat(document.getElementById('amount').value);
+            if(!amount || isNaN(amount)) return alert("කරුණාකර නිවැරදි මුදලක් ඇතුළත් කරන්න!");
+
+            const commRate = type === 'Deposit' ? 0.03 : 0.01;
+            const commission = amount * commRate;
+
+            const newTransRef = push(ref(db, 'transactions'));
+            set(newTransRef, {
+                agentId, type, amount, commission, date: new Date().toISOString()
+            });
+
+            const agentRef = ref(db, 'agents/' + agentId);
+            onValue(agentRef, (snapshot) => {
+                const data = snapshot.val();
+                if(data) {
+                    const newBal = (data.commissionBalance || 0) + commission;
+                    update(ref(db, 'agents/' + agentId), { commissionBalance: newBal });
+                }
+            }, { onlyOnce: true });
+
+            alert("දත්ත යාවත්කාලීන විය!");
+            document.getElementById('amount').value = '';
+        };
+
+        // --- Deduct/Reset Commission ---
+        window.deductCommission = function() {
+            const agentId = document.getElementById('selectAgentDeduct').value;
+            const amount = parseFloat(document.getElementById('deductAmount').value);
+            if(!amount) return alert("මුදල ඇතුළත් කරන්න!");
+
+            const agentRef = ref(db, 'agents/' + agentId);
+            onValue(agentRef, (snapshot) => {
+                const data = snapshot.val();
+                if(data && data.commissionBalance >= amount) {
+                    const newBal = data.commissionBalance - amount;
+                    update(ref(db, 'agents/' + agentId), { commissionBalance: newBal });
+                    alert("කොමිස් මුදල අඩු කරන ලදී!");
+                } else { alert("ප්‍රමාණවත් බැලන්ස් එකක් නැත!"); }
+            }, { onlyOnce: true });
+        };
+
+        // --- Listen for Realtime Updates ---
+        onValue(ref(db, 'agents'), (snapshot) => {
+            const data = snapshot.val();
+            const tbody = document.getElementById('agentTable');
+            const select1 = document.getElementById('selectAgent');
+            const select2 = document.getElementById('selectAgentDeduct');
+            
+            tbody.innerHTML = ''; 
+            select1.innerHTML = ''; 
+            select2.innerHTML = '';
+
+            const currentPath = window.location.href.replace('admin.html', 'subagent.html');
+
+            for(let id in data) {
+                const agent = data[id];
+                const agentLink = `${currentPath}?id=${id}`;
+
+                select1.innerHTML += `<option value="${id}">${agent.name}</option>`;
+                select2.innerHTML += `<option value="${id}">${agent.name}</option>`;
+
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${id}</td>
+                        <td>${agent.name}</td>
+                        <td style="color:#4caf50; font-weight:bold;">Rs ${agent.commissionBalance.toFixed(2)}</td>
+                        <td>
+                            <button class="copy-btn" onclick="copyToClipboard('${agentLink}')">Copy Link</button>
+                        </td>
+                    </tr>`;
+            }
+        });
+
+        window.copyToClipboard = function(text) {
+            navigator.clipboard.writeText(text).then(() => alert("Link එක Copy කරගත්තා!"));
+        };
+
+    </script>
+    <style>
+        :root { --p: #1e88e5; --bg: #121212; --c: #1e1e1e; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; padding: 20px; margin: 0; }
+        .container { max-width: 800px; margin: auto; }
+        .card { background: var(--c); padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); border: 1px solid #333; }
+        h2 { color: var(--p); margin-top: 0; font-size: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        input, select, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; background: #222; color: white; box-sizing: border-box; }
+        button { background: var(--p); border: none; font-weight: bold; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #333; padding: 12px; text-align: left; }
+        th { background: #252525; color: #aaa; }
+        .copy-btn { background: #444; padding: 5px 10px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h2>1. නව Sub-Agent ලියාපදිංචිය</h2>
+            <input id="agentName" placeholder="නම">
+            <input id="agentId" placeholder="User ID">
+            <input id="agentPhone" placeholder="දුරකථන අංකය">
+            <button onclick="addAgent()">Active කරන්න</button>
+        </div>
+
+        <div class="card">
+            <h2>2. ගනුදෙනු ඇතුළත් කිරීම (Realtime)</h2>
+            <select id="selectAgent"></select>
+            <select id="transType">
+                <option value="Deposit">Deposit (3%)</option>
+                <option value="Withdrawal">Withdrawal (1%)</option>
+            </select>
+            <input type="number" id="amount" placeholder="මුදල (Amount)">
+            <button onclick="addTransaction()" style="background:#43a047">Update කරන්න</button>
+        </div>
+
+        <div class="card">
+            <h2>3. කොමිස් ගෙවීම / Reset කිරීම</h2>
+            <select id="selectAgentDeduct"></select>
+            <input type="number" id="deductAmount" placeholder="අඩු කරන මුදල">
+            <button onclick="deductCommission()" style="background:#e53935">Balance අඩු කරන්න</button>
+        </div>
+
+        <div class="card">
+            <h2>4. Agents ලැයිස්තුව සහ Links</h2>
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead><tr><th>ID</th><th>නම</th><th>බැලන්ස්</th><th>Action</th></tr></thead>
+                    <tbody id="agentTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
