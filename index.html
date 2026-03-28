@@ -6,7 +6,7 @@
     <title>Admin - Nishan Service</title>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, push, onValue, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        import { getDatabase, ref, set, push, onValue, remove, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCxk8X9g6vDEOC3ZAQlGSYxC-SESW2vamY",
@@ -21,155 +21,160 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        // --- Add New Agent ---
-        window.addAgent = function() {
-            const id = document.getElementById('agentId').value.trim();
-            const name = document.getElementById('agentName').value.trim();
-            const phone = document.getElementById('agentPhone').value.trim();
-            if(!id || !name) return alert("කරුණාකර නම සහ ID ඇතුළත් කරන්න!");
+        // 1. Agent Register
+        window.addAgent = () => {
+            const id = document.getElementById('agId').value.trim();
+            const name = document.getElementById('agName').value.trim();
+            if(!id || !name) return alert("විස්තර ඇතුළත් කරන්න!");
+            set(ref(db, 'agents/' + id), { id, name, commissionBalance: 0 });
+            alert("Agent සාර්ථකව Active කළා!");
+        };
 
-            set(ref(db, 'agents/' + id), {
-                id, name, phone, commissionBalance: 0
-            }).then(() => {
-                alert("Sub Agent සාර්ථකව Active කළා!");
-                document.getElementById('agentId').value = '';
-                document.getElementById('agentName').value = '';
+        // 2. Transaction Update (With Betting ID)
+        window.updateTrans = () => {
+            const aid = document.getElementById('selAg').value;
+            const type = document.getElementById('type').value;
+            const bid = document.getElementById('betId').value.trim();
+            const amt = parseFloat(document.getElementById('amt').value);
+            if(!amt || !bid) return alert("මුදල සහ Betting ID ඇතුළත් කරන්න!");
+
+            const comm = type === 'Deposit' ? amt * 0.03 : amt * 0.01;
+            const tid = push(ref(db, 'transactions')).key;
+
+            set(ref(db, 'transactions/' + tid), {
+                id: tid, agentId: aid, bettingId: bid, type, amount: amt, commission: comm, date: new Date().toISOString()
+            });
+
+            runTransaction(ref(db, `agents/${aid}/commissionBalance`), (cur) => (cur || 0) + comm);
+            alert("Report Update කළා!");
+        };
+
+        // 3. Settle Commission (ගෙවූ කොමිස් අඩු කිරීම)
+        window.settleComm = () => {
+            const aid = document.getElementById('settleAg').value;
+            const pay = parseFloat(document.getElementById('payAmt').value);
+            if(!pay || pay <= 0) return alert("නිවැරදි මුදලක් ඇතුළත් කරන්න!");
+
+            runTransaction(ref(db, `agents/${aid}/commissionBalance`), (cur) => {
+                if (cur >= pay) {
+                    const pid = push(ref(db, 'settlements')).key;
+                    set(ref(db, `settlements/${pid}`), { agentId: aid, amount: pay, date: new Date().toISOString() });
+                    return cur - pay;
+                } else { alert("Balance මදි!"); return cur; }
+            });
+            alert("ගෙවීම් සටහන් කළා!");
+        };
+
+        // 4. Advanced Filters & Reports
+        window.loadReport = () => {
+            const af = document.getElementById('repAg').value;
+            const sTs = new Date(document.getElementById('startDate').value).setHours(0,0,0,0);
+            const eTs = new Date(document.getElementById('endDate').value).setHours(23,59,59,999);
+
+            onValue(ref(db, 'transactions'), snap => {
+                const tbody = document.getElementById('repBody'); tbody.innerHTML = '';
+                let d=0, w=0, c=0;
+                snap.forEach(sv => {
+                    const t = sv.val(); const ts = new Date(t.date).getTime();
+                    if((af === 'ALL' || t.agentId === af) && (ts >= sTs && ts <= eTs)) {
+                        if(t.type==='Deposit') d+=t.amount; else w+=t.amount;
+                        c+=t.commission;
+                        tbody.innerHTML += `<tr><td>${new Date(t.date).toLocaleString()}</td><td>${t.agentId}</td><td><b>${t.bettingId}</b></td><td>${t.type}</td><td>${t.amount}</td><td>+${t.commission.toFixed(2)}</td><td><button onclick="delT('${t.id}','${t.agentId}',${t.commission})" style="background:red">Del</button></td></tr>`;
+                    }
+                });
+                document.getElementById('sumDep').innerText = d.toFixed(2);
+                document.getElementById('sumWith').innerText = w.toFixed(2);
+                document.getElementById('sumComm').innerText = c.toFixed(2);
             });
         };
 
-        // --- Add Transaction & Update Commission ---
-        window.addTransaction = function() {
-            const agentId = document.getElementById('selectAgent').value;
-            const type = document.getElementById('transType').value;
-            const amount = parseFloat(document.getElementById('amount').value);
-            if(!amount || isNaN(amount)) return alert("කරුණාකර නිවැරදි මුදලක් ඇතුළත් කරන්න!");
+        window.delT = (tid, aid, comm) => {
+            if(confirm("මකන්නද?")) {
+                remove(ref(db, 'transactions/' + tid));
+                runTransaction(ref(db, `agents/${aid}/commissionBalance`), (cur) => (cur || 0) - comm);
+            }
+        };
 
-            const commRate = type === 'Deposit' ? 0.03 : 0.01;
-            const commission = amount * commRate;
-
-            const newTransRef = push(ref(db, 'transactions'));
-            set(newTransRef, {
-                agentId, type, amount, commission, date: new Date().toISOString()
+        // Chat Admin
+        window.loadAdminChat = () => {
+            const aid = document.getElementById('chatAg').value;
+            onValue(ref(db, `chats/${aid}`), s => {
+                const box = document.getElementById('adminChatBox'); box.innerHTML = '';
+                s.forEach(c => {
+                    const m = c.val(); const al = m.sender === 'Admin' ? 'flex-end' : 'flex-start';
+                    box.innerHTML += `<div style="align-self:${al}; background:${m.sender==='Admin'?'#00a650':'#233e4d'}; padding:8px; border-radius:8px; margin:4px; max-width:80%; font-size:12px;">${m.text}</div>`;
+                });
+                box.scrollTop = box.scrollHeight;
             });
-
-            const agentRef = ref(db, 'agents/' + agentId);
-            onValue(agentRef, (snapshot) => {
-                const data = snapshot.val();
-                if(data) {
-                    const newBal = (data.commissionBalance || 0) + commission;
-                    update(ref(db, 'agents/' + agentId), { commissionBalance: newBal });
-                }
-            }, { onlyOnce: true });
-
-            alert("දත්ත යාවත්කාලීන විය!");
-            document.getElementById('amount').value = '';
         };
 
-        // --- Deduct/Reset Commission ---
-        window.deductCommission = function() {
-            const agentId = document.getElementById('selectAgentDeduct').value;
-            const amount = parseFloat(document.getElementById('deductAmount').value);
-            if(!amount) return alert("මුදල ඇතුළත් කරන්න!");
-
-            const agentRef = ref(db, 'agents/' + agentId);
-            onValue(agentRef, (snapshot) => {
-                const data = snapshot.val();
-                if(data && data.commissionBalance >= amount) {
-                    const newBal = data.commissionBalance - amount;
-                    update(ref(db, 'agents/' + agentId), { commissionBalance: newBal });
-                    alert("කොමිස් මුදල අඩු කරන ලදී!");
-                } else { alert("ප්‍රමාණවත් බැලන්ස් එකක් නැත!"); }
-            }, { onlyOnce: true });
+        window.sendAdminMsg = () => {
+            const aid = document.getElementById('chatAg').value; const txt = document.getElementById('adminMsg').value;
+            if(!aid || !txt) return;
+            push(ref(db, `chats/${aid}`), { sender: 'Admin', text: txt, date: new Date().toISOString() });
+            document.getElementById('adminMsg').value = '';
         };
 
-        // --- Listen for Realtime Updates ---
-        onValue(ref(db, 'agents'), (snapshot) => {
-            const data = snapshot.val();
-            const tbody = document.getElementById('agentTable');
-            const select1 = document.getElementById('selectAgent');
-            const select2 = document.getElementById('selectAgentDeduct');
-            
-            tbody.innerHTML = ''; 
-            select1.innerHTML = ''; 
-            select2.innerHTML = '';
-
-            const currentPath = window.location.href.replace('admin.html', 'subagent.html');
-
-            for(let id in data) {
-                const agent = data[id];
-                const agentLink = `${currentPath}?id=${id}`;
-
-                select1.innerHTML += `<option value="${id}">${agent.name}</option>`;
-                select2.innerHTML += `<option value="${id}">${agent.name}</option>`;
-
-                tbody.innerHTML += `
-                    <tr>
-                        <td>${id}</td>
-                        <td>${agent.name}</td>
-                        <td style="color:#4caf50; font-weight:bold;">Rs ${agent.commissionBalance.toFixed(2)}</td>
-                        <td>
-                            <button class="copy-btn" onclick="copyToClipboard('${agentLink}')">Copy Link</button>
-                        </td>
-                    </tr>`;
+        // UI Updates
+        onValue(ref(db, 'agents'), snap => {
+            const data = snap.val();
+            const s1=document.getElementById('selAg'), s2=document.getElementById('repAg'), s3=document.getElementById('settleAg'), s4=document.getElementById('chatAg'), list=document.getElementById('agList');
+            s1.innerHTML=''; s2.innerHTML='<option value="ALL">All Agents</option>'; s3.innerHTML=''; s4.innerHTML='<option value="">Select Agent</option>'; list.innerHTML='';
+            for(let id in data){
+                const opt = `<option value="${id}">${data[id].name}</option>`;
+                s1.innerHTML+=opt; s2.innerHTML+=opt; s3.innerHTML+=opt; s4.innerHTML+=opt;
+                list.innerHTML+=`<tr><td>${data[id].name}</td><td>${id}</td><td>${data[id].commissionBalance.toFixed(2)}</td><td><button onclick="remove(ref(db, 'agents/${id}'))" style="background:red">Remove</button></td></tr>`;
             }
         });
-
-        window.copyToClipboard = function(text) {
-            navigator.clipboard.writeText(text).then(() => alert("Link එක Copy කරගත්තා!"));
-        };
-
     </script>
     <style>
-        :root { --p: #1e88e5; --bg: #121212; --c: #1e1e1e; }
-        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; padding: 20px; margin: 0; }
-        .container { max-width: 800px; margin: auto; }
-        .card { background: var(--c); padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); border: 1px solid #333; }
-        h2 { color: var(--p); margin-top: 0; font-size: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
-        input, select, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; background: #222; color: white; box-sizing: border-box; }
-        button { background: var(--p); border: none; font-weight: bold; cursor: pointer; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { border: 1px solid #333; padding: 12px; text-align: left; }
-        th { background: #252525; color: #aaa; }
-        .copy-btn { background: #444; padding: 5px 10px; font-size: 12px; }
+        body { font-family: sans-serif; background: #121212; color: white; padding: 15px; margin: 0; }
+        .card { background: #1e1e1e; padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #333; }
+        h2 { color: #4caf50; font-size: 16px; margin: 0 0 10px 0; border-bottom: 1px solid #333; }
+        input, select, button { width: 100%; padding: 10px; margin: 5px 0; border-radius: 8px; border: 1px solid #444; background: #252525; color: white; box-sizing: border-box; }
+        button { background: #1e88e5; border: none; font-weight: bold; cursor: pointer; }
+        .summary { display: flex; gap: 8px; margin: 10px 0; }
+        .sum-box { flex: 1; background: #252525; padding: 10px; border-radius: 8px; text-align: center; font-size: 11px; border: 1px solid #333; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 10px; }
+        th, td { border: 1px solid #333; padding: 8px; text-align: left; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="card">
-            <h2>1. නව Sub-Agent ලියාපදිංචිය</h2>
-            <input id="agentName" placeholder="නම">
-            <input id="agentId" placeholder="User ID">
-            <input id="agentPhone" placeholder="දුරකථන අංකය">
-            <button onclick="addAgent()">Active කරන්න</button>
-        </div>
-
-        <div class="card">
-            <h2>2. ගනුදෙනු ඇතුළත් කිරීම (Realtime)</h2>
-            <select id="selectAgent"></select>
-            <select id="transType">
-                <option value="Deposit">Deposit (3%)</option>
-                <option value="Withdrawal">Withdrawal (1%)</option>
-            </select>
-            <input type="number" id="amount" placeholder="මුදල (Amount)">
-            <button onclick="addTransaction()" style="background:#43a047">Update කරන්න</button>
-        </div>
-
-        <div class="card">
-            <h2>3. කොමිස් ගෙවීම / Reset කිරීම</h2>
-            <select id="selectAgentDeduct"></select>
-            <input type="number" id="deductAmount" placeholder="අඩු කරන මුදල">
-            <button onclick="deductCommission()" style="background:#e53935">Balance අඩු කරන්න</button>
-        </div>
-
-        <div class="card">
-            <h2>4. Agents ලැයිස්තුව සහ Links</h2>
-            <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th>ID</th><th>නම</th><th>බැලන්ස්</th><th>Action</th></tr></thead>
-                    <tbody id="agentTable"></tbody>
-                </table>
-            </div>
-        </div>
+    <div class="card">
+        <h2>1. Active / Register Agent</h2>
+        <div style="display:flex; gap:10px;"><input id="agName" placeholder="Name"><input id="agId" placeholder="User ID"></div>
+        <button onclick="addAgent()" style="background:#43a047">Add Agent</button>
     </div>
+    <div class="card">
+        <h2>2. Deposit / Withdrawal</h2>
+        <select id="selAg"></select>
+        <div style="display:flex; gap:10px;"><select id="type"><option value="Deposit">Deposit</option><option value="Withdrawal">Withdrawal</option></select><input id="betId" placeholder="Betting ID"></div>
+        <input type="number" id="amt" placeholder="Amount (Rs.)">
+        <button onclick="updateTrans()">Update Report</button>
+    </div>
+    <div class="card" style="border: 1px solid #ffc107;">
+        <h2 style="color:#ffc107;">3. Settle Commission (ගෙවීම්)</h2>
+        <select id="settleAg"></select>
+        <input type="number" id="payAmt" placeholder="ගෙවන මුදල (Rs.)">
+        <button onclick="settleComm()" style="background:#ffc107; color:black;">SETTLE & REDUCE BALANCE</button>
+    </div>
+    <div class="card">
+        <h2>4. Advanced Reports</h2>
+        <div style="display:flex; gap:10px;"><input type="date" id="startDate"><input type="date" id="endDate"></div>
+        <select id="repAg"></select><button onclick="loadReport()" style="background:#ff9800; color:black;">GENERATE REPORT</button>
+        <div class="summary">
+            <div class="sum-box">Dep:<br><b id="sumDep" style="color:#4caf50;">0</b></div>
+            <div class="sum-box">With:<br><b id="sumWith" style="color:#2196f3;">0</b></div>
+            <div class="sum-box">Comm:<br><b id="sumComm" style="color:#ffc107;">0</b></div>
+        </div>
+        <div style="overflow-x:auto;"><table><thead><tr><th>Date</th><th>Agent</th><th>Bet ID</th><th>Type</th><th>Amt</th><th>Comm</th><th>X</th></tr></thead><tbody id="repBody"></tbody></table></div>
+    </div>
+    <div class="card">
+        <h2 style="color:#00a650;">5. Live Chat</h2>
+        <select id="chatAg" onchange="loadAdminChat()"></select>
+        <div id="adminChatBox" style="height:150px; overflow-y:auto; background:#121212; display:flex; flex-direction:column; padding:10px; border-radius:8px; margin-bottom:10px;"></div>
+        <div style="display:flex; gap:5px;"><input id="adminMsg" placeholder="Message..."><button onclick="sendAdminMsg()" style="width:70px; background:#00a650;">SEND</button></div>
+    </div>
+    <div class="card"><h2>6. Agents List</h2><div style="overflow-x:auto;"><table><thead><tr><th>Name</th><th>ID</th><th>Bal</th><th>X</th></tr></thead><tbody id="agList"></tbody></table></div></div>
 </body>
 </html>
