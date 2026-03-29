@@ -6,7 +6,7 @@
     <title>Admin - Nishan Service</title>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, push, onValue, remove, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        import { getDatabase, ref, set, push, onValue, remove, runTransaction, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyCxk8X9g6vDEOC3ZAQlGSYxC-SESW2vamY",
@@ -21,7 +21,6 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        // 1. Agent Register
         window.addAgent = () => {
             const id = document.getElementById('agId').value.trim();
             const name = document.getElementById('agName').value.trim();
@@ -30,7 +29,6 @@
             alert("Agent සාර්ථකව Active කළා!");
         };
 
-        // 2. Transaction Update (With Betting ID)
         window.updateTrans = () => {
             const aid = document.getElementById('selAg').value;
             const type = document.getElementById('type').value;
@@ -38,18 +36,20 @@
             const amt = parseFloat(document.getElementById('amt').value);
             if(!amt || !bid) return alert("මුදල සහ Betting ID ඇතුළත් කරන්න!");
 
-            const comm = type === 'Deposit' ? amt * 0.03 : amt * 0.01;
+            // කොමිස් ගණනය කිරීම: Deposit 3%, Withdrawal 2%
+            const rate = type === 'Deposit' ? 0.03 : 0.02;
+            const comm = amt * rate;
             const tid = push(ref(db, 'transactions')).key;
 
             set(ref(db, 'transactions/' + tid), {
-                id: tid, agentId: aid, bettingId: bid, type, amount: amt, commission: comm, date: new Date().toISOString()
+                id: tid, agentId: aid, bettingId: bid, type, amount: amt, 
+                commission: comm, rate: (rate * 100) + "%", date: new Date().toISOString()
             });
 
             runTransaction(ref(db, `agents/${aid}/commissionBalance`), (cur) => (cur || 0) + comm);
             alert("Report Update කළා!");
         };
 
-        // 3. Settle Commission (ගෙවූ කොමිස් අඩු කිරීම)
         window.settleComm = () => {
             const aid = document.getElementById('settleAg').value;
             const pay = parseFloat(document.getElementById('payAmt').value);
@@ -65,21 +65,34 @@
             alert("ගෙවීම් සටහන් කළා!");
         };
 
-        // 4. Advanced Filters & Reports
-        window.loadReport = () => {
+        window.loadReport = async () => {
             const af = document.getElementById('repAg').value;
             const sTs = new Date(document.getElementById('startDate').value).setHours(0,0,0,0);
             const eTs = new Date(document.getElementById('endDate').value).setHours(23,59,59,999);
+
+            const agentsSnap = await get(ref(db, 'agents'));
+            const activeAgents = agentsSnap.exists() ? Object.keys(agentsSnap.val()) : [];
 
             onValue(ref(db, 'transactions'), snap => {
                 const tbody = document.getElementById('repBody'); tbody.innerHTML = '';
                 let d=0, w=0, c=0;
                 snap.forEach(sv => {
                     const t = sv.val(); const ts = new Date(t.date).getTime();
-                    if((af === 'ALL' || t.agentId === af) && (ts >= sTs && ts <= eTs)) {
+                    const isAgentActive = activeAgents.includes(t.agentId);
+
+                    if((af === 'ALL' || t.agentId === af) && (ts >= sTs && ts <= eTs) && isAgentActive) {
                         if(t.type==='Deposit') d+=t.amount; else w+=t.amount;
                         c+=t.commission;
-                        tbody.innerHTML += `<tr><td>${new Date(t.date).toLocaleString()}</td><td>${t.agentId}</td><td><b>${t.bettingId}</b></td><td>${t.type}</td><td>${t.amount}</td><td>+${t.commission.toFixed(2)}</td><td><button onclick="delT('${t.id}','${t.agentId}',${t.commission})" style="background:red">Del</button></td></tr>`;
+                        const rateShow = t.rate ? t.rate : (t.type === 'Deposit' ? '3%' : '1%'); // පරණ දත්ත සඳහා 1% පෙන්වයි
+                        tbody.innerHTML += `<tr>
+                            <td>${new Date(t.date).toLocaleString()}</td>
+                            <td>${t.agentId}</td>
+                            <td><b>${t.bettingId}</b></td>
+                            <td>${t.type} <br><small>(${rateShow})</small></td>
+                            <td>${t.amount}</td>
+                            <td>+${t.commission.toFixed(2)}</td>
+                            <td><button onclick="delT('${t.id}','${t.agentId}',${t.commission})" style="background:red">Del</button></td>
+                        </tr>`;
                     }
                 });
                 document.getElementById('sumDep').innerText = d.toFixed(2);
@@ -95,7 +108,29 @@
             }
         };
 
-        // Chat Admin
+        window.removeAgent = (id, name) => {
+            if(confirm(`"${name}" (ID: ${id}) ඉවත් කරන්නද?`)) {
+                remove(ref(db, 'agents/' + id)).then(() => {
+                    alert("Agent සාර්ථකව ඉවත් කළා!");
+                    location.reload();
+                });
+            }
+        };
+
+        onValue(ref(db, 'agents'), snap => {
+            const data = snap.val();
+            const s1=document.getElementById('selAg'), s2=document.getElementById('repAg'), s3=document.getElementById('settleAg'), s4=document.getElementById('chatAg'), list=document.getElementById('agList');
+            s1.innerHTML=''; s2.innerHTML='<option value="ALL">All Agents</option>'; s3.innerHTML=''; s4.innerHTML='<option value="">Select Agent</option>'; list.innerHTML='';
+            if(data) {
+                for(let id in data){
+                    const agent = data[id];
+                    const opt = `<option value="${id}">${agent.name}</option>`;
+                    s1.innerHTML+=opt; s2.innerHTML+=opt; s3.innerHTML+=opt; s4.innerHTML+=opt;
+                    list.innerHTML+=`<tr><td>${agent.name}</td><td>${id}</td><td>${(agent.commissionBalance || 0).toFixed(2)}</td><td><button onclick="removeAgent('${id}','${agent.name}')" style="background:red; padding:5px;">Remove</button></td></tr>`;
+                }
+            }
+        });
+
         window.loadAdminChat = () => {
             const aid = document.getElementById('chatAg').value;
             onValue(ref(db, `chats/${aid}`), s => {
@@ -114,18 +149,6 @@
             push(ref(db, `chats/${aid}`), { sender: 'Admin', text: txt, date: new Date().toISOString() });
             document.getElementById('adminMsg').value = '';
         };
-
-        // UI Updates
-        onValue(ref(db, 'agents'), snap => {
-            const data = snap.val();
-            const s1=document.getElementById('selAg'), s2=document.getElementById('repAg'), s3=document.getElementById('settleAg'), s4=document.getElementById('chatAg'), list=document.getElementById('agList');
-            s1.innerHTML=''; s2.innerHTML='<option value="ALL">All Agents</option>'; s3.innerHTML=''; s4.innerHTML='<option value="">Select Agent</option>'; list.innerHTML='';
-            for(let id in data){
-                const opt = `<option value="${id}">${data[id].name}</option>`;
-                s1.innerHTML+=opt; s2.innerHTML+=opt; s3.innerHTML+=opt; s4.innerHTML+=opt;
-                list.innerHTML+=`<tr><td>${data[id].name}</td><td>${id}</td><td>${data[id].commissionBalance.toFixed(2)}</td><td><button onclick="remove(ref(db, 'agents/${id}'))" style="background:red">Remove</button></td></tr>`;
-            }
-        });
     </script>
     <style>
         body { font-family: sans-serif; background: #121212; color: white; padding: 15px; margin: 0; }
@@ -146,9 +169,9 @@
         <button onclick="addAgent()" style="background:#43a047">Add Agent</button>
     </div>
     <div class="card">
-        <h2>2. Deposit / Withdrawal</h2>
+        <h2>2. Deposit (3%) / Withdrawal (2%)</h2>
         <select id="selAg"></select>
-        <div style="display:flex; gap:10px;"><select id="type"><option value="Deposit">Deposit</option><option value="Withdrawal">Withdrawal</option></select><input id="betId" placeholder="Betting ID"></div>
+        <div style="display:flex; gap:10px;"><select id="type"><option value="Deposit">Deposit (3%)</option><option value="Withdrawal">Withdrawal (2%)</option></select><input id="betId" placeholder="Betting ID"></div>
         <input type="number" id="amt" placeholder="Amount (Rs.)">
         <button onclick="updateTrans()">Update Report</button>
     </div>
@@ -167,7 +190,7 @@
             <div class="sum-box">With:<br><b id="sumWith" style="color:#2196f3;">0</b></div>
             <div class="sum-box">Comm:<br><b id="sumComm" style="color:#ffc107;">0</b></div>
         </div>
-        <div style="overflow-x:auto;"><table><thead><tr><th>Date</th><th>Agent</th><th>Bet ID</th><th>Type</th><th>Amt</th><th>Comm</th><th>X</th></tr></thead><tbody id="repBody"></tbody></table></div>
+        <div style="overflow-x:auto;"><table><thead><tr><th>Date</th><th>Agent</th><th>Bet ID</th><th>Type (%)</th><th>Amt</th><th>Comm</th><th>X</th></tr></thead><tbody id="repBody"></tbody></table></div>
     </div>
     <div class="card">
         <h2 style="color:#00a650;">5. Live Chat</h2>
@@ -175,6 +198,6 @@
         <div id="adminChatBox" style="height:150px; overflow-y:auto; background:#121212; display:flex; flex-direction:column; padding:10px; border-radius:8px; margin-bottom:10px;"></div>
         <div style="display:flex; gap:5px;"><input id="adminMsg" placeholder="Message..."><button onclick="sendAdminMsg()" style="width:70px; background:#00a650;">SEND</button></div>
     </div>
-    <div class="card"><h2>6. Agents List</h2><div style="overflow-x:auto;"><table><thead><tr><th>Name</th><th>ID</th><th>Bal</th><th>X</th></tr></thead><tbody id="agList"></tbody></table></div></div>
+    <div class="card"><h2>6. Agents List</h2><div style="overflow-x:auto;"><table><thead><tr><th>Name</th><th>ID</th><th>Bal</th><th>Action</th></tr></thead><tbody id="agList"></tbody></table></div></div>
 </body>
 </html>
